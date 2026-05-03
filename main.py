@@ -4,10 +4,24 @@
 #  Design: Frontend owns ALL data/storage.
 #          This backend receives context, calls Gemini,
 #          and returns the AI response. Nothing is stored here.
+#
+#  FIXES Applied:
+#  [1] genai.configure() moved to app startup (not per-request)
+#  [2] API key validated on startup — fail fast
+#  [3] exam_date=None no longer passed as string "None" to Gemini
+#  [4] Separate _model_large() for plan/syllabus (4096 tokens)
+#  [5] daily_hours enforced as hard number in prompt
+#  [6] progress_pct uses session length, not raw message count
+#  [7] History slice keeps first 2 msgs + last 10 (preserve intro context)
+#  [8] CORS locked — set ALLOWED_ORIGIN in .env for prod
+#  [9] Added /syllabus/parse  — text / base64-image / base64-PDF input
+#  [10] Added /plan/replan    — reschedule from a missed day forward
 # ============================================================
 
+import base64
 import json
 import re
+from datetime import datetime as dt
 from typing import List, Optional
 
 import google.generativeai as genai
@@ -23,6 +37,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     gemini_api_key: str = ""
+    allowed_origin: str = "*"          # set to "https://yourapp.com" in prod
 
     class Config:
         env_file = ".env"
@@ -35,8 +50,8 @@ settings = Settings()
 # ║  2. GEMINI HELPERS                                       ║
 # ╚══════════════════════════════════════════════════════════╝
 
+# FIX [4] — two model configs: standard (chat/doubt) vs large (plan/syllabus)
 def _model(temperature: float = 0.0):
-    genai.configure(api_key=settings.gemini_api_key)
     return genai.GenerativeModel(
         model_name="gemini-1.5-flash",
         generation_config=genai.GenerationConfig(
@@ -44,6 +59,25 @@ def _model(temperature: float = 0.0):
             top_p=0.9,
             top_k=40,
             max_output_tokens=1024,
+        ),
+        safety_settings=[
+            {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+        ],
+    )
+
+
+def _model_large(temperature: float = 0.3):
+    """For plan generation and syllabus parsing — needs more output tokens."""
+    return genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        generation_config=genai.GenerationConfig(
+            temperature=temperature,
+            top_p=0.9,
+            top_k=40,
+            max_output_tokens=4096,    # FIX [4] — was 1024, truncated long plans
         ),
         safety_settings=[
             {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
@@ -62,10 +96,6 @@ def _clean_json(text: str) -> str:
 
 
 def _teacher_persona(subject: str, topic: str, mode: str = "text") -> str:
-    """
-    Master behavioral contract injected into every lecture prompt.
-    This is the 'fine-tuning substitute' — strict rules Gemini must obey.
-    """
     return f"""
 === AI TEACHER IDENTITY & STRICT RULES ===
 
@@ -119,13 +149,29 @@ def _infer_phase(message_count: int) -> str:
 
 # ╔══════════════════════════════════════════════════════════╗
 # ║  3. REQUEST / RESPONSE SCHEMAS                           ║
-#  Frontend sends everything the AI needs in the request.   ║
-#  Nothing is fetched from a DB here.                       ║
 # ╚══════════════════════════════════════════════════════════╝
 
 class Message(BaseModel):
     role: str       # "user" | "assistant"
     content: str
+
+
+# ── /syllabus/parse ───────────────────────────────────────
+class SyllabusRequest(BaseModel):
+    """
+    Send ONE of: raw_text, image_base64, pdf_base64.
+    image_mime: "image/jpeg" | "image/png" | "image/webp"
+    """
+    subject: str
+    raw_text: Optional[str] = None
+    image_base64: Optional[str] = None
+    image_mime: Optional[str] = "image/jpeg"
+    pdf_base64: Optional[str] = None
+
+class SyllabusResponse(BaseModel):
+    topics: List[str]
+    estimated_total_hours: float
+    topic_details: list          # [{topic, estimated_min, complexity}]
 
 
 # ── /plan/generate ────────────────────────────────────────
@@ -134,12 +180,26 @@ class PlanRequest(BaseModel):
     topics: List[str]
     start_date: str                    # "YYYY-MM-DD"
     exam_date: Optional[str] = None   # "YYYY-MM-DD"
-    daily_hours: int = 2
 
 class PlanResponse(BaseModel):
     schedule: list
     summary: str
     total_days: int
+    daily_hours_recommended: float    # FIX — returned to frontend for display
+
+
+# ── /plan/replan ──────────────────────────────────────────
+class ReplanRequest(BaseModel):
+    subject: str
+    remaining_topics: List[str]       # topics not yet completed
+    missed_from_date: str             # "YYYY-MM-DD" — day user fell behind
+    exam_date: str                    # "YYYY-MM-DD"
+    daily_hours_recommended: float    # from original plan
+
+class ReplanResponse(BaseModel):
+    schedule: list
+    summary: str
+    daily_hours_recommended: float    # may increase if behind schedule
 
 
 # ── /lecture/intro ────────────────────────────────────────
@@ -155,7 +215,7 @@ class LectureIntroResponse(BaseModel):
 class LectureChatRequest(BaseModel):
     subject: str
     topic: str
-    history: List[Message]   # full conversation sent by frontend
+    history: List[Message]
     message: str
     mode: str = "text"       # "text" | "voice"
 
@@ -170,24 +230,24 @@ class DoubtRequest(BaseModel):
     subject: str
     topic: str
     question: str
-    context: Optional[List[Message]] = []   # recent messages for relevance
+    context: Optional[List[Message]] = []
 
 class DoubtResponse(BaseModel):
     answer: str
 
 
-# ── /lecture/summary ─────────────────────────────────────
+# ── /lecture/summary ──────────────────────────────────────
 class SummaryRequest(BaseModel):
     subject: str
     topic: str
-    history: List[Message]   # full session history
+    history: List[Message]
 
 class SummaryResponse(BaseModel):
     summary: str
 
 
 # ╔══════════════════════════════════════════════════════════╗
-# ║  4. APP                                                  ║
+# ║  4. APP + STARTUP                                        ║
 # ╚══════════════════════════════════════════════════════════╝
 
 app = FastAPI(
@@ -196,16 +256,25 @@ app = FastAPI(
         "Stateless AI backend. Frontend sends all context in the request body. "
         "Backend calls Gemini and returns the AI response. No data is stored here."
     ),
-    version="2.0.0",
+    version="3.0.0",
 )
 
+# FIX [8] — CORS: use env var for prod, wildcard only for local dev
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[settings.allowed_origin],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# FIX [1] + [2] — configure Gemini once at startup, fail fast if key missing
+@app.on_event("startup")
+def startup():
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set. Add it to .env or Railway env vars.")
+    genai.configure(api_key=settings.gemini_api_key)
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -214,11 +283,81 @@ app.add_middleware(
 
 @app.get("/", tags=["Health"])
 def root():
-    return {"status": "ok", "service": "EduPlatform AI", "version": "2.0.0"}
+    return {"status": "ok", "service": "EduPlatform AI", "version": "3.0.0"}
 
 @app.get("/health", tags=["Health"])
 def health():
     return {"status": "healthy"}
+
+
+# ── Syllabus Parser ───────────────────────────────────────
+
+@app.post("/syllabus/parse", response_model=SyllabusResponse, tags=["Syllabus"])
+def parse_syllabus(req: SyllabusRequest):
+    """
+    FIX [9] — NEW ENDPOINT.
+    Accepts plain text, base64 image (JPEG/PNG/WEBP), or base64 PDF.
+    Returns structured topic list with time estimates.
+    Frontend stores result, then calls /plan/generate with topics list.
+    """
+    prompt_text = f"""You are an expert academic curriculum analyst.
+
+TASK: Parse this syllabus for subject "{req.subject}".
+Extract every distinct topic/chapter/unit.
+Estimate realistic self-study time per topic based on complexity.
+
+Complexity guide:
+  - Foundational/definition topic  → 30-45 min
+  - Standard concept               → 45-90 min
+  - Complex/multi-part topic       → 90-180 min
+
+Respond ONLY with valid JSON, no markdown fences:
+{{
+  "topics": ["topic1", "topic2", ...],
+  "estimated_total_hours": 42.5,
+  "topic_details": [
+    {{
+      "topic": "exact topic name",
+      "estimated_min": 60,
+      "complexity": "standard"
+    }}
+  ]
+}}
+complexity values: "foundational" | "standard" | "complex"
+"""
+
+    try:
+        if req.image_base64:
+            # Gemini Vision — image syllabus
+            image_data = base64.b64decode(req.image_base64)
+            response = _model_large(temperature=0.0).generate_content([
+                {"mime_type": req.image_mime, "data": image_data},
+                prompt_text,
+            ])
+        elif req.pdf_base64:
+            # Gemini Vision — PDF syllabus (first page rendered by Gemini)
+            pdf_data = base64.b64decode(req.pdf_base64)
+            response = _model_large(temperature=0.0).generate_content([
+                {"mime_type": "application/pdf", "data": pdf_data},
+                prompt_text,
+            ])
+        elif req.raw_text:
+            full_prompt = f"{prompt_text}\n\nSYLLABUS TEXT:\n{req.raw_text}"
+            response = _model_large(temperature=0.0).generate_content(full_prompt)
+        else:
+            raise HTTPException(status_code=400, detail="Provide raw_text, image_base64, or pdf_base64.")
+
+        data = json.loads(_clean_json(response.text))
+        return SyllabusResponse(
+            topics=data.get("topics", []),
+            estimated_total_hours=data.get("estimated_total_hours", 0.0),
+            topic_details=data.get("topic_details", []),
+        )
+
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini error: {e}")
 
 
 # ── Study Plan ────────────────────────────────────────────
@@ -226,26 +365,34 @@ def health():
 @app.post("/plan/generate", response_model=PlanResponse, tags=["Study Plan"])
 def generate_plan(req: PlanRequest):
     """
-    Frontend sends: subject, topics list, start_date, exam_date, daily_hours.
-    Returns: AI-generated day-by-day schedule as JSON.
-    Frontend stores the result in its own DB.
+    Frontend sends: subject, topics (from /syllabus/parse), start_date, exam_date.
+    Backend calculates daily_hours from topic estimates + deadline.
+    Returns: AI-generated day-by-day schedule + recommended daily hours.
+    Frontend stores result in its own DB.
     """
-    from datetime import datetime as dt
+    # FIX [3] — safe exam_date handling
+    exam_str = req.exam_date if req.exam_date else "Not specified"
     start = dt.strptime(req.start_date, "%Y-%m-%d")
-    exam  = dt.strptime(req.exam_date, "%Y-%m-%d") if req.exam_date else None
-    days  = (exam - start).days if exam else len(req.topics) * 2
+    days  = (dt.strptime(req.exam_date, "%Y-%m-%d") - start).days if req.exam_date else len(req.topics) * 2
+
+    # FIX [5] — backend owns the math; pass hard number to Gemini
+    # Rough estimate: avg 60 min/topic
+    total_estimated_min = len(req.topics) * 60
+    daily_hours_recommended = round(total_estimated_min / max(days, 1) / 60, 1)
+    daily_hours_recommended = max(1.0, min(daily_hours_recommended, 8.0))  # clamp 1–8h
+    duration_mins = int(daily_hours_recommended * 60)
 
     prompt = f"""You are a professional academic curriculum planner.
 
 TASK: Create a complete, realistic day-by-day study schedule.
 
 INPUT:
-  Subject        : {req.subject}
-  Topics         : {json.dumps(req.topics)}
-  Start date     : {req.start_date}
-  Exam date      : {req.exam_date or 'Not specified'}
-  Days available : {days}
-  Daily hours    : {req.daily_hours}
+  Subject               : {req.subject}
+  Topics                : {json.dumps(req.topics)}
+  Start date            : {req.start_date}
+  Exam date             : {exam_str}
+  Days available        : {days}
+  Daily study duration  : {duration_mins} minutes (FIXED — do not change this)
 
 PLANNING RULES:
   - Assess each topic's complexity (foundational = 1 day, complex = 2-3 days)
@@ -253,7 +400,7 @@ PLANNING RULES:
   - Insert a "Revision" day after every 5 lecture days
   - Last 3 days before exam = revision/mock tests only
   - Do NOT assign lectures on Sundays (rest day)
-  - duration_mins = daily_hours * 60 (max 180)
+  - duration_mins for every entry = {duration_mins} (the fixed value above)
   - notes must be a specific actionable study tip for that topic
 
 Respond ONLY with valid JSON, no markdown fences:
@@ -263,7 +410,7 @@ Respond ONLY with valid JSON, no markdown fences:
       "day": 1,
       "date": "YYYY-MM-DD",
       "topic": "exact topic name",
-      "duration_mins": 120,
+      "duration_mins": {duration_mins},
       "notes": "specific study tip",
       "type": "lecture"
     }}
@@ -274,12 +421,73 @@ Respond ONLY with valid JSON, no markdown fences:
 type values: "lecture" | "revision" | "exam" | "rest"
 """
     try:
-        response = _model(temperature=0.3).generate_content(prompt)
+        response = _model_large(temperature=0.3).generate_content(prompt)
         data = json.loads(_clean_json(response.text))
         return PlanResponse(
             schedule=data.get("schedule", []),
             summary=data.get("summary", ""),
             total_days=data.get("total_days", days),
+            daily_hours_recommended=daily_hours_recommended,
+        )
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini error: {e}")
+
+
+# ── Replan ────────────────────────────────────────────────
+
+@app.post("/plan/replan", response_model=ReplanResponse, tags=["Study Plan"])
+def replan(req: ReplanRequest):
+    """
+    FIX [10] — NEW ENDPOINT.
+    Call when user misses days. Recalculates schedule for remaining topics.
+    daily_hours may increase if user is behind.
+    """
+    today_str = dt.now().strftime("%Y-%m-%d")
+    days_left = (dt.strptime(req.exam_date, "%Y-%m-%d") - dt.now()).days
+
+    total_estimated_min = len(req.remaining_topics) * 60
+    new_daily_hours = round(total_estimated_min / max(days_left, 1) / 60, 1)
+    new_daily_hours = max(1.0, min(new_daily_hours, 8.0))
+    duration_mins = int(new_daily_hours * 60)
+
+    prompt = f"""You are a recovery curriculum planner.
+The student missed some study days and needs a revised schedule.
+
+INPUT:
+  Subject               : {req.subject}
+  Remaining topics      : {json.dumps(req.remaining_topics)}
+  Resume from date      : {today_str}
+  Exam date             : {req.exam_date}
+  Days left             : {days_left}
+  Daily study duration  : {duration_mins} minutes (recalculated)
+
+Apply the same planning rules as before (revision days, no Sundays, etc.).
+Be realistic — if the student is very behind, say so in the summary.
+
+Respond ONLY with valid JSON, no markdown fences:
+{{
+  "schedule": [
+    {{
+      "day": 1,
+      "date": "YYYY-MM-DD",
+      "topic": "exact topic name",
+      "duration_mins": {duration_mins},
+      "notes": "specific study tip",
+      "type": "lecture"
+    }}
+  ],
+  "summary": "honest 3-sentence recovery strategy"
+}}
+"""
+    try:
+        response = _model_large(temperature=0.3).generate_content(prompt)
+        data = json.loads(_clean_json(response.text))
+        return ReplanResponse(
+            schedule=data.get("schedule", []),
+            summary=data.get("summary", ""),
+            daily_hours_recommended=new_daily_hours,
         )
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {e}")
@@ -291,11 +499,6 @@ type values: "lecture" | "revision" | "exam" | "rest"
 
 @app.post("/lecture/intro", response_model=LectureIntroResponse, tags=["Lecture"])
 def lecture_intro(req: LectureIntroRequest):
-    """
-    Frontend sends: subject, topic.
-    Returns: AI opening message for the lecture (Phase 1 — Introduction).
-    Frontend stores this as the first message in the session.
-    """
     prompt = f"""
 {_teacher_persona(req.subject, req.topic)}
 
@@ -327,13 +530,8 @@ Do NOT teach the content yet — this is the introduction only.
 
 @app.post("/lecture/chat", response_model=LectureChatResponse, tags=["Lecture"])
 def lecture_chat(req: LectureChatRequest):
-    """
-    Frontend sends: subject, topic, full conversation history, new message, mode.
-    Returns: AI teacher reply + current phase + estimated progress %.
-    Frontend appends the user message and this reply to its local session storage.
-    """
-    message_count  = len(req.history)
-    current_phase  = _infer_phase(message_count)
+    message_count = len(req.history)
+    current_phase = _infer_phase(message_count)
 
     phase_instruction = {
         "INTRODUCTION": """
@@ -380,9 +578,15 @@ CURRENT PHASE: {current_phase} (message {message_count + 1} of session)
 {off_topic_guard}
 """
 
+    # FIX [7] — keep first 2 messages (intro context) + last 10 (recency)
+    if len(req.history) > 12:
+        history_to_send = req.history[:2] + req.history[-10:]
+    else:
+        history_to_send = req.history
+
     gemini_history = [
         {"role": "user" if m.role == "user" else "model", "parts": [m.content]}
-        for m in req.history[-12:]
+        for m in history_to_send
     ]
 
     try:
@@ -391,7 +595,9 @@ CURRENT PHASE: {current_phase} (message {message_count + 1} of session)
             f"{system}\n\nStudent message: {req.message}"
         ).text.strip()
 
-        progress = min(95.0, len([m for m in req.history if m.role == "user"]) * 10.0)
+        # FIX [6] — progress based on session length (20 msgs = ~full session)
+        user_msg_count = len([m for m in req.history if m.role == "user"])
+        progress = min(95.0, (user_msg_count / 20) * 100)
 
         return LectureChatResponse(reply=reply, phase=current_phase, progress_pct=progress)
     except Exception as e:
@@ -402,11 +608,6 @@ CURRENT PHASE: {current_phase} (message {message_count + 1} of session)
 
 @app.post("/doubt/ask", response_model=DoubtResponse, tags=["Doubt Solver"])
 def ask_doubt(req: DoubtRequest):
-    """
-    Frontend sends: subject, topic, question, optional recent context messages.
-    Returns: structured AI answer.
-    Frontend stores the doubt + answer in its own DB.
-    """
     ctx_str = ""
     if req.context:
         ctx_str = "\n".join(
@@ -456,11 +657,6 @@ DOUBT RESOLUTION RULES:
 
 @app.post("/lecture/summary", response_model=SummaryResponse, tags=["Lecture"])
 def lecture_summary(req: SummaryRequest):
-    """
-    Frontend sends: subject, topic, full session message history.
-    Returns: structured exam-ready study notes.
-    Frontend stores the summary against the completed lecture record.
-    """
     conversation = "\n".join(
         f"{'TEACHER' if m.role == 'assistant' else 'STUDENT'}: {m.content}"
         for m in req.history
