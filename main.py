@@ -44,7 +44,7 @@ settings = Settings()
 def _model(temperature: float = 0.0):
     try:
         return genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-3.1-flash-live-preview",
             generation_config=genai.GenerationConfig(
                 temperature=temperature,
                 top_p=0.9,
@@ -53,12 +53,12 @@ def _model(temperature: float = 0.0):
             )
         )
     except:
-        return genai.GenerativeModel(model_name="gemini-pro")
+        return genai.GenerativeModel(model_name="gemini-3.1-flash-live-preview")
 
 def _model_large(temperature: float = 0.3):
     try:
         return genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-3.1-flash-live-preview",
             generation_config=genai.GenerationConfig(
                 temperature=temperature,
                 top_p=0.9,
@@ -67,7 +67,7 @@ def _model_large(temperature: float = 0.3):
             )
         )
     except:
-        return genai.GenerativeModel(model_name="gemini-pro")
+        return genai.GenerativeModel(model_name="gemini-3.1-flash-live-preview")
 
 def _clean_json(text: str) -> str:
     text = text.strip()
