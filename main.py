@@ -44,7 +44,7 @@ settings = Settings()
 def _model(temperature: float = 0.0):
     try:
         return genai.GenerativeModel(
-            model_name="gemini-pro-latest",
+            model_name="gemini-1.5-flash",
             generation_config=genai.GenerationConfig(
                 temperature=temperature,
                 top_p=0.9,
@@ -238,10 +238,19 @@ async def parse_syllabus(req: SyllabusRequest):
             logger.warning("No content provided in request")
             raise HTTPException(status_code=400, detail="Provide raw_text, image_base64, or pdf_base64.")
 
+        # Check if response was blocked by safety filters
+        if not response.candidates:
+            logger.error(f"AI Blocked Response. Feedback: {response.prompt_feedback}")
+            raise HTTPException(status_code=502, detail="AI Safety filter blocked the syllabus content.")
+
         raw_ai_text = response.text
         logger.info(f"Raw AI Response: {raw_ai_text}")
 
-        data = json.loads(_clean_json(raw_ai_text))
+        try:
+            data = json.loads(_clean_json(raw_ai_text))
+        except Exception as json_err:
+            logger.error(f"JSON Parse Error: {str(json_err)} | Raw Text: {raw_ai_text}")
+            raise HTTPException(status_code=502, detail="AI returned invalid JSON format.")
         return SyllabusResponse(
             topics=data.get("topics", []),
             estimated_total_hours=data.get("estimated_total_hours", 0.0),
