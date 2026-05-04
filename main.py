@@ -42,26 +42,32 @@ settings = Settings()
 # ╚══════════════════════════════════════════════════════════╝
 
 def _model(temperature: float = 0.0):
-    return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config=genai.GenerationConfig(
-            temperature=temperature,
-            top_p=0.9,
-            top_k=40,
-            max_output_tokens=1024,
+    try:
+        return genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                top_p=0.9,
+                top_k=40,
+                max_output_tokens=1024,
+            )
         )
-    )
+    except:
+        return genai.GenerativeModel(model_name="gemini-pro")
 
 def _model_large(temperature: float = 0.3):
-    return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config=genai.GenerationConfig(
-            temperature=temperature,
-            top_p=0.9,
-            top_k=40,
-            max_output_tokens=4096,
+    try:
+        return genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                top_p=0.9,
+                top_k=40,
+                max_output_tokens=4096,
+            )
         )
-    )
+    except:
+        return genai.GenerativeModel(model_name="gemini-pro")
 
 def _clean_json(text: str) -> str:
     text = text.strip()
@@ -169,8 +175,26 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     if not settings.gemini_api_key:
-        logger.error("FATAL: GEMINI_API_KEY is not set.")
+        logger.error("FATAL: GEMINI_API_KEY is not set. Add it to .env or Railway env vars.")
+    
     genai.configure(api_key=settings.gemini_api_key)
+    
+    # FIX: List all available models to help the user identify the correct name
+    try:
+        logger.info("--- DISCOVERING MODELS ---")
+        available_models = [m.name for m in genai.list_models()]
+        for model_name in available_models:
+            logger.info(f"Key has access to: {model_name}")
+        
+        # Check if 1.5 flash is actually there
+        if "models/gemini-1.5-flash" in available_models:
+            logger.info("CONFIRMED: models/gemini-1.5-flash is available.")
+        elif "gemini-1.5-flash" in available_models:
+            logger.info("CONFIRMED: gemini-1.5-flash (no prefix) is available.")
+        else:
+            logger.warning("WARNING: gemini-1.5-flash NOT FOUND in available models list.")
+    except Exception as e:
+        logger.error(f"Failed to list models: {str(e)}")
 
 @app.get("/health")
 def health():
