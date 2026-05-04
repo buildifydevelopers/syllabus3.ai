@@ -44,7 +44,7 @@ settings = Settings()
 def _model(temperature: float = 0.0):
     try:
         return genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-pro-latest",
             generation_config=genai.GenerationConfig(
                 temperature=temperature,
                 top_p=0.9,
