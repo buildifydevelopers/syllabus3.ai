@@ -327,20 +327,36 @@ async def lecture_intro(req: LectureIntroRequest):
         logger.error(f"FAILED /lecture/intro: {str(e)}")
         raise HTTPException(status_code=502, detail=str(e))
 
-@app.post("/lecture/chat", response_model=LectureChatResponse)
+from fastapi.responses import StreamingResponse
+
+@app.post("/lecture/chat")
 async def lecture_chat(req: LectureChatRequest):
-    try:
-        # Mock logic for simple test
-        user_msg_count = len(req.history)
-        progress = min(95.0, (user_msg_count / 20) * 100)
-        
-        prompt = f"Topic: {req.topic}. Student says: {req.message}. Reply briefly."
-        reply = _model(temperature=0.0).generate_content(prompt).text.strip()
-        
-        return LectureChatResponse(reply=reply, phase="TEACHING", progress_pct=progress)
-    except Exception as e:
-        logger.error(f"FAILED /lecture/chat: {str(e)}")
-        raise HTTPException(status_code=502, detail=str(e))
+    logger.info(f"Chat request for topic: {req.topic}")
+    
+    def generate():
+        try:
+            # Create a simple prompt for the AI teacher
+            prompt = f"Subject: {req.subject}. Topic: {req.topic}. Student says: {req.message}. Reply as an encouraging AI teacher."
+            
+            # Using stream=True for real-time response
+            response = _model(temperature=0.7).generate_content(prompt, stream=True)
+            
+            for chunk in response:
+                if chunk.text:
+                    # The Android app expects a JSON object in each SSE data line
+                    data = {
+                        "reply": chunk.text,
+                        "phase": "TEACHING",
+                        "progress_pct": 50.0 # Simplified progress
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+            
+            logger.info(f"Finished streaming for {req.topic}")
+        except Exception as e:
+            logger.error(f"Streaming error: {str(e)}")
+            yield f"data: {json.dumps({'reply': 'Error: ' + str(e), 'phase': 'ERROR', 'progress_pct': 0.0})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 @app.post("/lecture/summary", response_model=SummaryResponse)
 async def lecture_summary(req: SummaryRequest):
