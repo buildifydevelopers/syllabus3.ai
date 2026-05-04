@@ -270,13 +270,37 @@ async def parse_syllabus(req: SyllabusRequest):
 @app.post("/plan/generate", response_model=PlanResponse)
 async def generate_plan(req: PlanRequest):
     logger.info(f"Generating plan for {req.subject}")
-    # Simplified logic to ensure it doesn't crash
-    daily_hours = 2.0
-    days = 7
-    prompt = f"Create a study plan for {req.subject} with topics {req.topics}. Return JSON."
+    
+    prompt = f"""Create a detailed day-by-day study plan for the subject '{req.subject}'.
+    Topics to cover: {', '.join(req.topics)}
+    Start Date: {req.start_date}
+    Exam Date: {req.exam_date if req.exam_date else 'Not specified'}
+
+    Respond ONLY with valid JSON in this exact structure:
+    {{
+      "schedule": [
+        {{
+          "day": 1,
+          "date": "YYYY-MM-DD",
+          "topic": "exact topic title from the list provided",
+          "duration_mins": 120,
+          "notes": "Specific study tip for this topic",
+          "type": "lecture"
+        }}
+      ],
+      "summary": "A brief overview of the study strategy.",
+      "total_days": 14,
+      "daily_hours_recommended": 2.0
+    }}
+    
+    Ensure 'duration_mins' is an integer. Return NO other text, only the JSON block."""
     
     try:
         response = _model_large(temperature=0.3).generate_content(prompt)
+        # Check if response was blocked
+        if not response.candidates:
+             raise HTTPException(status_code=502, detail="AI Safety block on plan generation.")
+             
         raw_text = response.text
         logger.info(f"Raw AI Plan: {raw_text}")
         data = json.loads(_clean_json(raw_text))
@@ -284,8 +308,8 @@ async def generate_plan(req: PlanRequest):
         return PlanResponse(
             schedule=data.get("schedule", []),
             summary=data.get("summary", "Plan generated."),
-            total_days=data.get("total_days", days),
-            daily_hours_recommended=daily_hours,
+            total_days=data.get("total_days", 0),
+            daily_hours_recommended=data.get("daily_hours_recommended", 2.0),
         )
     except Exception as e:
         logger.error(f"FAILED /plan/generate: {str(e)}")
