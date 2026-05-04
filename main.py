@@ -41,33 +41,30 @@ settings = Settings()
 # ║  2. GEMINI HELPERS                                       ║
 # ╚══════════════════════════════════════════════════════════╝
 
+# Global variable to hold the dynamically discovered model name
+MODEL_NAME = "gemini-1.5-flash" 
+
 def _model(temperature: float = 0.0):
-    try:
-        return genai.GenerativeModel(
-            model_name="gemini-3.1-flash-live-preview",
-            generation_config=genai.GenerationConfig(
-                temperature=temperature,
-                top_p=0.9,
-                top_k=40,
-                max_output_tokens=1024,
-            )
+    return genai.GenerativeModel(
+        model_name=MODEL_NAME,
+        generation_config=genai.GenerationConfig(
+            temperature=temperature,
+            top_p=0.9,
+            top_k=40,
+            max_output_tokens=1024,
         )
-    except:
-        return genai.GenerativeModel(model_name="gemini-3.1-flash-live-preview")
+    )
 
 def _model_large(temperature: float = 0.3):
-    try:
-        return genai.GenerativeModel(
-            model_name="gemini-3.1-flash-live-preview",
-            generation_config=genai.GenerationConfig(
-                temperature=temperature,
-                top_p=0.9,
-                top_k=40,
-                max_output_tokens=4096,
-            )
+    return genai.GenerativeModel(
+        model_name=MODEL_NAME,
+        generation_config=genai.GenerationConfig(
+            temperature=temperature,
+            top_p=0.9,
+            top_k=40,
+            max_output_tokens=4096,
         )
-    except:
-        return genai.GenerativeModel(model_name="gemini-3.1-flash-live-preview")
+    )
 
 def _clean_json(text: str) -> str:
     text = text.strip()
@@ -179,22 +176,31 @@ def startup():
     
     genai.configure(api_key=settings.gemini_api_key)
     
-    # FIX: List all available models to help the user identify the correct name
+    # FIX: List all available models and PICK THE BEST STABLE ONE
+    global MODEL_NAME
     try:
         logger.info("--- DISCOVERING MODELS ---")
-        available_models = [m.name for m in genai.list_models()]
-        for model_name in available_models:
-            logger.info(f"Key has access to: {model_name}")
+        best_match = None
+        for m in genai.list_models():
+            logger.info(f"Key has access to: {m.name}")
+            if "generateContent" in m.supported_generation_methods:
+                name = m.name
+                # Prioritize Flash models, but avoid "preview", "live", or "lite" for stability
+                if "flash" in name.lower():
+                    if "preview" not in name.lower() and "live" not in name.lower() and "lite" not in name.lower():
+                        best_match = name
+                        break # Found a perfect stable Flash model (e.g., gemini-2.5-flash)
+                    elif best_match is None:
+                        best_match = name # Fallback to any Flash model
+                elif best_match is None:
+                    best_match = name # Fallback to anything that supports generation
         
-        # Check if 1.5 flash is actually there
-        if "models/gemini-1.5-flash" in available_models:
-            logger.info("CONFIRMED: models/gemini-1.5-flash is available.")
-        elif "gemini-1.5-flash" in available_models:
-            logger.info("CONFIRMED: gemini-1.5-flash (no prefix) is available.")
-        else:
-            logger.warning("WARNING: gemini-1.5-flash NOT FOUND in available models list.")
+        if best_match:
+            MODEL_NAME = best_match
+        
+        logger.info(f"--- AUTO-SELECTED STABLE MODEL: {MODEL_NAME} ---")
     except Exception as e:
-        logger.error(f"Failed to list models: {str(e)}")
+        logger.error(f"Failed to discover models: {str(e)}")
 
 @app.get("/health")
 def health():
