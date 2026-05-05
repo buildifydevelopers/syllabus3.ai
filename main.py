@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-HF_API_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions"
+HF_API_URL = "https://router.huggingface.co/sambanova/v1/chat/completions"
 
 
 # ╔══════════════════════════════════════════════════════════╗
