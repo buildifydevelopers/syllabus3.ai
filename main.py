@@ -209,12 +209,10 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    if not settings.hf_api_key:
-        raise RuntimeError("HF_API_KEY not set. Add Hugging Face token to .env")
+    if not settings.hf_token:    # ← was hf_api_key
+        raise RuntimeError("HF_TOKEN not set.")
     logger.info(f"Using model : {settings.hf_model}")
-    logger.info(f"API URL     : {HF_API_URL}")
-
-
+    
 # ╔══════════════════════════════════════════════════════════╗
 # ║  5. ROUTES                                               ║
 # ╚══════════════════════════════════════════════════════════╝
