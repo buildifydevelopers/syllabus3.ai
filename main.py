@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     hf_token: str = ""                          # Hugging Face token (read)
     allowed_origin: str = "*"
     # Swap model here — no other code change needed
-    hf_model: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    hf_model: str = "meta-llama/Llama-3.1-8B-Instruct:sambanova"
 
     class Config:
         env_file = ".env"
@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-HF_API_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions"
+HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
 
 
 # ╔══════════════════════════════════════════════════════════╗
