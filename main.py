@@ -31,7 +31,7 @@ logger = logging.getLogger("EduPlatform")
 # ╚══════════════════════════════════════════════════════════╝
 
 class Settings(BaseSettings):
-    hf_api_key: str = ""                          # Hugging Face token (read)
+    hf_token: str = ""                          # Hugging Face token (read)
     allowed_origin: str = "*"
     # Swap model here — no other code change needed
     hf_model: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
@@ -42,16 +42,16 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-HF_API_URL = f"https://api-inference.huggingface.co/v1/chat/completions"
+HF_API_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions"
 
 
 # ╔══════════════════════════════════════════════════════════╗
 # ║  2. HF INFERENCE HELPERS                                 ║
 # ╚══════════════════════════════════════════════════════════╝
 
-def _headers() -> dict:
+def _headers():
     return {
-        "Authorization": f"Bearer {settings.hf_api_key}",
+        "Authorization": f"Bearer {settings.hf_token}",
         "Content-Type": "application/json",
     }
 
