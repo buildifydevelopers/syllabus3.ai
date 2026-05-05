@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-HF_API_URL = f"https://api-inference.huggingface.co/models/{settings.hf_model}/v1/chat/completions"
+HF_API_URL = f"https://api-inference.huggingface.co/v1/chat/completions"
 
 
 # ╔══════════════════════════════════════════════════════════╗
