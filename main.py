@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     hf_token: str = ""                          # Hugging Face token (read)
     allowed_origin: str = "*"
     # Swap model here — no other code change needed
-    hf_model: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    hf_model: str = "Meta-Llama-3.1-8B-Instruct"
 
     class Config:
         env_file = ".env"
