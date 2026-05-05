@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     hf_token: str = ""                          # Hugging Face token (read)
     allowed_origin: str = "*"
     # Swap model here — no other code change needed
-    hf_model: str = "meta-llama/Llama-3.1-8B-Instruct:sambanova"
+    hf_model: str = "meta-llama/Llama-3.3-70B-Instruct:sambanova"
 
     class Config:
         env_file = ".env"
