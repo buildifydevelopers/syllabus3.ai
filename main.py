@@ -240,22 +240,64 @@ SYLLABUS:
 async def generate_plan(req: PlanRequest):
     logger.info(f"/plan/generate subject={req.subject}")
     messages = [
-        {"role": "system", "content": "You are a professional study planner. Output ONLY valid JSON."},
-        {"role": "user", "content": f"Create a day-by-day plan for {req.subject}. Topics: {req.topics}. Start: {req.start_date}. Output JSON with 'schedule', 'summary', 'total_days', 'daily_hours_recommended'."}
+        {"role": "system", "content": "You are a rigid study planner. You ONLY output valid JSON. You NEVER change the structure."},
+        {"role": "user", "content": f"""Create a study plan for {req.subject}. 
+Topics: {req.topics}
+Start Date: {req.start_date}
+
+Output EXACTLY this JSON structure:
+{{
+  "schedule": [
+    {{
+      "day": 1,
+      "date": "2026-05-06",
+      "topic": "Topic Name",
+      "duration_mins": 60,
+      "notes": "Tip",
+      "type": "lecture"
+    }}
+  ],
+  "summary": "Plain text summary string here",
+  "total_days": 10,
+  "daily_hours_recommended": 2.0
+}}
+
+CRITICAL: 
+- 'schedule' MUST be a LIST (array), not a dictionary. 
+- 'summary' MUST be a STRING, not an object.
+"""}
     ]
     raw = ""
     try:
         raw = await _chat_text(messages, max_tokens=3000, temperature=0.1)
         cleaned = _clean_json(raw)
         data = json.loads(cleaned)
-        return PlanResponse(**data)
-    except json.JSONDecodeError as e:
-        logger.error(f"Plan JSON Decode Failure: {e} | Processed string: {cleaned if 'cleaned' in locals() else 'N/A'}")
-        logger.error(f"Raw AI Output: {raw}")
-        raise HTTPException(status_code=502, detail="AI produced invalid JSON for the plan.")
+        
+        # RESILIENCE: If AI returns schedule as a dict, convert to list
+        schedule_data = data.get("schedule", [])
+        if isinstance(schedule_data, dict):
+            logger.warning("AI returned dictionary schedule. Converting to list.")
+            new_list = []
+            for date_key, details in schedule_data.items():
+                if isinstance(details, dict):
+                    details["date"] = date_key
+                    new_list.append(details)
+            schedule_data = new_list
+
+        # RESILIENCE: If summary is an object/dict, convert to string
+        summary_data = data.get("summary", "")
+        if not isinstance(summary_data, str):
+            summary_data = json.dumps(summary_data)
+
+        return PlanResponse(
+            schedule=schedule_data,
+            summary=summary_data,
+            total_days=data.get("total_days", 0),
+            daily_hours_recommended=data.get("daily_hours_recommended", 2.0)
+        )
     except Exception as e:
-        logger.error(f"Plan error: {e}")
-        raise HTTPException(status_code=502, detail="Plan generation failed.")
+        logger.error(f"Plan Generation Failed: {e} | Raw: {raw}")
+        raise HTTPException(status_code=502, detail="AI failed to generate a valid study plan structure.")
 
 @app.post("/lecture/intro", response_model=LectureIntroResponse)
 async def lecture_intro(req: LectureIntroRequest):
