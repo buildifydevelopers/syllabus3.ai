@@ -68,11 +68,19 @@ async def _chat_text(messages: list, max_tokens: int = 1024, temperature: float 
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 def _clean_json(text: str) -> str:
-    """Robustly extract JSON from AI markdown blocks."""
+    """Robustly extract JSON and handle common AI syntax errors."""
     text = text.strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    # Remove markdown code blocks if present
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```", "", text)
+    
+    # Try to find the outermost curly braces
+    match = re.search(r"(\{.*\})", text, re.DOTALL)
     if match:
-        return match.group(0)
+        text = match.group(1)
+    
+    # Fix trailing commas in lists/objects which break json.loads
+    text = re.sub(r",\s*([\]\}])", r"\1", text)
     return text
 
 def _system_teacher(subject: str, topic: str, mode: str = "text") -> dict:
@@ -200,31 +208,51 @@ def health():
 @app.post("/syllabus/parse", response_model=SyllabusResponse)
 async def parse_syllabus(req: SyllabusRequest):
     content = req.raw_text or "No content provided."
-    if req.image_base64 or req.pdf_base64:
-        logger.info("Binary data received. Note: Text-only model requires OCR on client.")
+    logger.info(f"/syllabus/parse subject={req.subject}")
 
     messages = [
-        {"role": "system", "content": "You are an academic curriculum analyst. Output ONLY JSON."},
-        {"role": "user", "content": f"Parse this syllabus for {req.subject}. Output JSON with 'topics', 'estimated_total_hours', and 'topic_details'. SYLLABUS: {content[:4000]}"}
+        {"role": "system", "content": "You are an academic curriculum analyst. Output ONLY valid JSON. No conversational text."},
+        {"role": "user", "content": f"""Parse this syllabus for {req.subject}. 
+Output JSON with:
+- "topics": list of strings
+- "estimated_total_hours": float
+- "topic_details": list of objects {{"topic": string, "estimated_min": int, "complexity": string}}
+
+SYLLABUS: 
+{content[:5000]}"""}
     ]
+    raw = ""
     try:
-        raw = await _chat_text(messages)
-        data = json.loads(_clean_json(raw))
+        # Use lower temperature for structured data tasks
+        raw = await _chat_text(messages, temperature=0.1, max_tokens=2500)
+        cleaned = _clean_json(raw)
+        data = json.loads(cleaned)
         return SyllabusResponse(**data)
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON Decode Failure: {e} | Processed string: {cleaned if 'cleaned' in locals() else 'N/A'}")
+        logger.error(f"Raw AI Output: {raw}")
+        raise HTTPException(status_code=502, detail="AI produced invalid JSON formatting.")
     except Exception as e:
         logger.error(f"Syllabus parse error: {e}")
         raise HTTPException(status_code=502, detail="AI parsing failed.")
 
 @app.post("/plan/generate", response_model=PlanResponse)
 async def generate_plan(req: PlanRequest):
+    logger.info(f"/plan/generate subject={req.subject}")
     messages = [
-        {"role": "system", "content": "You are a study planner. Output ONLY JSON."},
+        {"role": "system", "content": "You are a professional study planner. Output ONLY valid JSON."},
         {"role": "user", "content": f"Create a day-by-day plan for {req.subject}. Topics: {req.topics}. Start: {req.start_date}. Output JSON with 'schedule', 'summary', 'total_days', 'daily_hours_recommended'."}
     ]
+    raw = ""
     try:
-        raw = await _chat_text(messages, max_tokens=2048)
-        data = json.loads(_clean_json(raw))
+        raw = await _chat_text(messages, max_tokens=3000, temperature=0.1)
+        cleaned = _clean_json(raw)
+        data = json.loads(cleaned)
         return PlanResponse(**data)
+    except json.JSONDecodeError as e:
+        logger.error(f"Plan JSON Decode Failure: {e} | Processed string: {cleaned if 'cleaned' in locals() else 'N/A'}")
+        logger.error(f"Raw AI Output: {raw}")
+        raise HTTPException(status_code=502, detail="AI produced invalid JSON for the plan.")
     except Exception as e:
         logger.error(f"Plan error: {e}")
         raise HTTPException(status_code=502, detail="Plan generation failed.")
