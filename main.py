@@ -1,8 +1,7 @@
 # ============================================================
-#  EduPlatform Backend — NVIDIA NIM Version
+#  EduPlatform Backend — NVIDIA NIM Version (Optimized)
 #  Stack : FastAPI + NVIDIA NIM API (OpenAI-compatible)
-#  Model : meta/llama-3.1-8b-instruct (free, 40 RPM)
-#  Swap  : change NVIDIA_MODEL env var — zero code changes
+#  Model : meta/llama-3.1-8b-instruct (Llama 3.1)
 # ============================================================
 
 import base64
@@ -25,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("EduPlatform")
 
-
 # ╔══════════════════════════════════════════════════════════╗
 # ║  1. CONFIG                                               ║
 # ╚══════════════════════════════════════════════════════════╝
@@ -33,19 +31,17 @@ logger = logging.getLogger("EduPlatform")
 class Settings(BaseSettings):
     nvidia_api_key: str = ""
     allowed_origin: str = "*"
-    nvidia_model: str = "meta/llama-3.1-8b-instruct"  # change via env var
+    nvidia_model: str = "meta/llama-3.1-8b-instruct"
 
     class Config:
         env_file = ".env"
         extra = "ignore"
 
 settings = Settings()
-
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
-
 # ╔══════════════════════════════════════════════════════════╗
-# ║  2. NVIDIA NIM HELPERS                                   ║
+# ║  2. HELPERS                                              ║
 # ╚══════════════════════════════════════════════════════════╝
 
 def _headers() -> dict:
@@ -54,13 +50,7 @@ def _headers() -> dict:
         "Content-Type": "application/json",
     }
 
-
-async def _chat_text(
-    messages: list,
-    max_tokens: int = 1024,
-    temperature: float = 0.2,
-) -> str:
-    """Call NVIDIA NIM, return plain text reply."""
+async def _chat_text(messages: list, max_tokens: int = 1024, temperature: float = 0.2) -> str:
     payload = {
         "model": settings.nvidia_model,
         "messages": messages,
@@ -73,40 +63,35 @@ async def _chat_text(
 
     if resp.status_code != 200:
         logger.error(f"NVIDIA API error {resp.status_code}: {resp.text}")
-        raise HTTPException(status_code=502, detail=f"NVIDIA API error: {resp.text}")
+        raise HTTPException(status_code=502, detail=f"AI Engine error: {resp.status_code}")
 
     return resp.json()["choices"][0]["message"]["content"].strip()
 
-
 def _clean_json(text: str) -> str:
+    """Robustly extract JSON from AI markdown blocks."""
     text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    return text.strip()
-
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        return match.group(0)
+    return text
 
 def _system_teacher(subject: str, topic: str, mode: str = "text") -> dict:
     return {
         "role": "system",
-        "content": f"""You are EduBot, an expert academic teacher specialising in {subject}.
-Your ONLY job is to teach the topic: "{topic}".
+        "content": f"""You are EduBot, an expert academic teacher specializing in {subject}.
+Your goal is to teach the topic: "{topic}".
 RULES:
-1. Stay on topic. If asked anything unrelated, redirect back to {topic}.
-2. Never hallucinate. Only state facts you are certain about.
-3. Teach one concept at a time. Confirm understanding before moving on.
-4. Use correct academic terminology. Explain terms on first use.
-5. {"Keep responses under 80 words. No markdown. Plain sentences only." if mode == "voice" else "Use markdown (headers, bold, bullets) to structure responses."}
-6. End each reply with [TEACHING], [CHECK], or [RECAP].
+1. Stay strictly on topic.
+2. Teach one concept at a time.
+3. Use markdown for structure (bold, bullets).
+4. End replies with [TEACHING], [CHECK], or [RECAP].
 """,
     }
-
 
 def _infer_phase(message_count: int) -> str:
     if message_count <= 2:    return "INTRODUCTION"
     elif message_count <= 8:  return "CORE TEACHING"
-    elif message_count <= 12: return "EXAMPLES & PRACTICE"
-    else:                     return "RECAP & WRAP-UP"
-
+    else:                     return "RECAP"
 
 # ╔══════════════════════════════════════════════════════════╗
 # ║  3. SCHEMAS                                              ║
@@ -119,9 +104,8 @@ class Message(BaseModel):
 class SyllabusRequest(BaseModel):
     subject: str
     raw_text: Optional[str] = None
-    image_base64: Optional[str] = None  # ⚠️ text model — image not supported
-    image_mime: Optional[str] = "image/jpeg"
-    pdf_base64: Optional[str] = None    # extract text on Android → send as raw_text
+    image_base64: Optional[str] = None
+    pdf_base64: Optional[str] = None
 
 class SyllabusResponse(BaseModel):
     topics: List[str]
@@ -143,9 +127,7 @@ class PlanResponse(BaseModel):
 class ReplanRequest(BaseModel):
     subject: str
     remaining_topics: List[str]
-    missed_from_date: str
     exam_date: str
-    daily_hours_recommended: float
 
 class ReplanResponse(BaseModel):
     schedule: list
@@ -188,9 +170,8 @@ class DoubtRequest(BaseModel):
 class DoubtResponse(BaseModel):
     answer: str
 
-
 # ╔══════════════════════════════════════════════════════════╗
-# ║  4. APP + STARTUP                                        ║
+# ║  4. APP                                                  ║
 # ╚══════════════════════════════════════════════════════════╝
 
 app = FastAPI(title="EduPlatform AI — NVIDIA NIM", version="5.0.0")
@@ -203,375 +184,124 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.on_event("startup")
 async def startup():
     if not settings.nvidia_api_key:
-        raise RuntimeError("NVIDIA_API_KEY not set. Get key from build.nvidia.com")
-    logger.info(f"Using model : {settings.nvidia_model}")
-    logger.info(f"API URL     : {NVIDIA_API_URL}")
-
-
-# ╔══════════════════════════════════════════════════════════╗
-# ║  5. ROUTES                                               ║
-# ╚══════════════════════════════════════════════════════════╝
+        logger.warning("NVIDIA_API_KEY is not set.")
 
 @app.get("/health")
 def health():
     return {"status": "healthy", "model": settings.nvidia_model}
 
-
-# ── Syllabus Parser ───────────────────────────────────────
+# ╔══════════════════════════════════════════════════════════╗
+# ║  5. ROUTES                                               ║
+# ╚══════════════════════════════════════════════════════════╝
 
 @app.post("/syllabus/parse", response_model=SyllabusResponse)
 async def parse_syllabus(req: SyllabusRequest):
-    logger.info(f"/syllabus/parse subject={req.subject}")
-
-    if req.raw_text:
-        syllabus_content = req.raw_text
-    elif req.pdf_base64:
-        try:
-            pdf_bytes = base64.b64decode(req.pdf_base64)
-            syllabus_content = pdf_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            raise HTTPException(status_code=400, detail="Could not decode PDF. Extract text on device and send as raw_text.")
-    elif req.image_base64:
-        raise HTTPException(status_code=400, detail="Image not supported. Use OCR on device and send as raw_text.")
-    else:
-        raise HTTPException(status_code=400, detail="Provide raw_text or pdf_base64.")
+    content = req.raw_text or "No content provided."
+    if req.image_base64 or req.pdf_base64:
+        logger.info("Binary data received. Note: Text-only model requires OCR on client.")
 
     messages = [
-        {
-            "role": "system",
-            "content": "You are an academic curriculum analyst. Output ONLY valid JSON — no markdown fences, no explanation.",
-        },
-        {
-            "role": "user",
-            "content": f"""Parse this syllabus for subject "{req.subject}".
-Extract every distinct topic/chapter/unit.
-Estimate realistic self-study time:
-  foundational → 30-45 min | standard → 45-90 min | complex → 90-180 min
-
-Output ONLY this JSON:
-{{
-  "topics": ["topic1", "topic2"],
-  "estimated_total_hours": 42.5,
-  "topic_details": [
-    {{"topic": "topic1", "estimated_min": 60, "complexity": "standard"}}
-  ]
-}}
-
-SYLLABUS:
-{syllabus_content[:6000]}""",
-        },
+        {"role": "system", "content": "You are an academic curriculum analyst. Output ONLY JSON."},
+        {"role": "user", "content": f"Parse this syllabus for {req.subject}. Output JSON with 'topics', 'estimated_total_hours', and 'topic_details'. SYLLABUS: {content[:4000]}"}
     ]
-
     try:
-        raw = await _chat_text(messages, max_tokens=2048, temperature=0.2)
-        logger.info(f"Raw response: {raw[:300]}")
+        raw = await _chat_text(messages)
         data = json.loads(_clean_json(raw))
-        return SyllabusResponse(
-            topics=data.get("topics", []),
-            estimated_total_hours=data.get("estimated_total_hours", 0.0),
-            topic_details=data.get("topic_details", []),
-        )
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON error: {e} | raw: {raw}")
-        raise HTTPException(status_code=502, detail="Model returned invalid JSON.")
+        return SyllabusResponse(**data)
     except Exception as e:
-        logger.error(f"FAILED /syllabus/parse: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-# ── Study Plan ────────────────────────────────────────────
+        logger.error(f"Syllabus parse error: {e}")
+        raise HTTPException(status_code=502, detail="AI parsing failed.")
 
 @app.post("/plan/generate", response_model=PlanResponse)
 async def generate_plan(req: PlanRequest):
-    logger.info(f"/plan/generate subject={req.subject}")
-
-    exam_str = req.exam_date if req.exam_date else "Not specified"
-    start = dt.strptime(req.start_date, "%Y-%m-%d")
-    days = (dt.strptime(req.exam_date, "%Y-%m-%d") - start).days if req.exam_date else len(req.topics) * 2
-    total_min = len(req.topics) * 60
-    daily_hours = round(total_min / max(days, 1) / 60, 1)
-    daily_hours = max(1.0, min(daily_hours, 8.0))
-    duration_mins = int(daily_hours * 60)
-
     messages = [
-        {
-            "role": "system",
-            "content": "You are a professional academic curriculum planner. Output ONLY valid JSON. No markdown fences.",
-        },
-        {
-            "role": "user",
-            "content": f"""Create a day-by-day study schedule.
-
-Subject: {req.subject}
-Topics: {json.dumps(req.topics)}
-Start date: {req.start_date}
-Exam date: {exam_str}
-Days available: {days}
-Daily duration: {duration_mins} minutes (FIXED — do not change)
-
-Rules:
-- Foundational = 1 day, complex = 2-3 days
-- Prerequisites come first
-- Revision day every 5 lecture days
-- Last 3 days = revision/mock tests only
-- No lectures on Sundays
-- duration_mins = {duration_mins} for every entry
-
-Output ONLY this JSON:
-{{
-  "schedule": [
-    {{
-      "day": 1,
-      "date": "YYYY-MM-DD",
-      "topic": "topic name",
-      "duration_mins": {duration_mins},
-      "notes": "specific study tip",
-      "type": "lecture"
-    }}
-  ],
-  "summary": "3-sentence strategy overview",
-  "total_days": {days},
-  "daily_hours_recommended": {daily_hours}
-}}
-type values: "lecture" | "revision" | "exam" | "rest"
-""",
-        },
+        {"role": "system", "content": "You are a study planner. Output ONLY JSON."},
+        {"role": "user", "content": f"Create a day-by-day plan for {req.subject}. Topics: {req.topics}. Start: {req.start_date}. Output JSON with 'schedule', 'summary', 'total_days', 'daily_hours_recommended'."}
     ]
-
     try:
-        raw = await _chat_text(messages, max_tokens=4096, temperature=0.3)
-        logger.info(f"Raw plan: {raw[:300]}")
+        raw = await _chat_text(messages, max_tokens=2048)
         data = json.loads(_clean_json(raw))
-        return PlanResponse(
-            schedule=data.get("schedule", []),
-            summary=data.get("summary", ""),
-            total_days=data.get("total_days", days),
-            daily_hours_recommended=data.get("daily_hours_recommended", daily_hours),
-        )
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON error: {e}")
-        raise HTTPException(status_code=502, detail="Model returned invalid JSON.")
+        return PlanResponse(**data)
     except Exception as e:
-        logger.error(f"FAILED /plan/generate: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-# ── Replan ────────────────────────────────────────────────
-
-@app.post("/plan/replan", response_model=ReplanResponse)
-async def replan(req: ReplanRequest):
-    today_str = dt.now().strftime("%Y-%m-%d")
-    days_left = (dt.strptime(req.exam_date, "%Y-%m-%d") - dt.now()).days
-    total_min = len(req.remaining_topics) * 60
-    new_daily_hours = round(total_min / max(days_left, 1) / 60, 1)
-    new_daily_hours = max(1.0, min(new_daily_hours, 8.0))
-    duration_mins = int(new_daily_hours * 60)
-
-    messages = [
-        {"role": "system", "content": "You are a recovery curriculum planner. Output ONLY valid JSON."},
-        {
-            "role": "user",
-            "content": f"""Student missed study days. Create revised schedule.
-
-Subject: {req.subject}
-Remaining topics: {json.dumps(req.remaining_topics)}
-Resume from: {today_str}
-Exam date: {req.exam_date}
-Days left: {days_left}
-Daily duration: {duration_mins} minutes
-
-Output ONLY this JSON:
-{{
-  "schedule": [
-    {{
-      "day": 1,
-      "date": "YYYY-MM-DD",
-      "topic": "topic name",
-      "duration_mins": {duration_mins},
-      "notes": "study tip",
-      "type": "lecture"
-    }}
-  ],
-  "summary": "honest 3-sentence recovery strategy"
-}}
-""",
-        },
-    ]
-
-    try:
-        raw = await _chat_text(messages, max_tokens=4096, temperature=0.3)
-        data = json.loads(_clean_json(raw))
-        return ReplanResponse(
-            schedule=data.get("schedule", []),
-            summary=data.get("summary", ""),
-            daily_hours_recommended=new_daily_hours,
-        )
-    except Exception as e:
-        logger.error(f"FAILED /plan/replan: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-# ── Lecture Intro ─────────────────────────────────────────
+        logger.error(f"Plan error: {e}")
+        raise HTTPException(status_code=502, detail="Plan generation failed.")
 
 @app.post("/lecture/intro", response_model=LectureIntroResponse)
 async def lecture_intro(req: LectureIntroRequest):
-    logger.info(f"/lecture/intro topic={req.topic}")
     messages = [
         _system_teacher(req.subject, req.topic),
-        {
-            "role": "user",
-            "content": f"""Write Phase 1 (INTRODUCTION) for lecture on "{req.topic}".
-Include:
-1. Welcome sentence naming topic.
-2. Definition (2-3 sentences, correct terminology).
-3. Why it matters — one real-world use.
-4. Prerequisites (or "No prior knowledge needed").
-5. Roadmap (numbered list of what will be covered).
-6. "Type 'ready' or ask any question to begin! 🎓"
-
-Markdown format. 200-280 words. Do NOT teach content yet.
-[TEACHING]""",
-        },
+        {"role": "user", "content": f"Give a 200-word introduction to {req.topic}. Explain why it's important and what we will cover."}
     ]
     try:
-        reply = await _chat_text(messages, max_tokens=512, temperature=0.2)
+        reply = await _chat_text(messages)
         return LectureIntroResponse(intro=reply)
     except Exception as e:
-        logger.error(f"FAILED /lecture/intro: {e}")
         raise HTTPException(status_code=502, detail=str(e))
-
-
-# ── Lecture Chat (SSE streaming) ──────────────────────────
 
 @app.post("/lecture/chat")
 async def lecture_chat(req: LectureChatRequest):
-    logger.info(f"/lecture/chat topic={req.topic}")
-
     message_count = len(req.history)
-    current_phase = _infer_phase(message_count)
-    user_msg_count = len([m for m in req.history if m.role == "user"])
-    progress = min(95.0, (user_msg_count / 20) * 100)
-
-    history_slice = (req.history[:2] + req.history[-10:]) if len(req.history) > 12 else req.history
-
+    phase = _infer_phase(message_count)
+    
+    # History Slicing for token efficiency
+    history_slice = req.history[-8:] if len(req.history) > 8 else req.history
+    
     messages = [_system_teacher(req.subject, req.topic, req.mode)]
     for m in history_slice:
-        messages.append({
-            "role": "user" if m.role == "user" else "assistant",
-            "content": m.content,
-        })
+        messages.append({"role": m.role if m.role in ["user", "assistant"] else "user", "content": m.content})
     messages.append({"role": "user", "content": req.message})
 
-    payload = {
-        "model": settings.nvidia_model,
-        "messages": messages,
-        "max_tokens": 512,
-        "temperature": 0.2,
-        "stream": True,
-    }
-
     async def generate():
+        payload = {
+            "model": settings.nvidia_model,
+            "messages": messages,
+            "max_tokens": 512,
+            "temperature": 0.7,
+            "stream": True,
+        }
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
                 async with client.stream("POST", NVIDIA_API_URL, headers=_headers(), json=payload) as response:
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             chunk_str = line[6:].strip()
-                            if chunk_str == "[DONE]":
-                                break
+                            if chunk_str == "[DONE]": break
                             try:
                                 chunk = json.loads(chunk_str)
                                 delta = chunk["choices"][0]["delta"].get("content", "")
                                 if delta:
-                                    yield f"data: {json.dumps({'reply': delta, 'phase': current_phase, 'progress_pct': progress})}\n\n"
-                            except Exception:
-                                continue
+                                    yield f"data: {json.dumps({'reply': delta, 'phase': phase, 'progress_pct': 50.0})}\n\n"
+                            except: continue
         except Exception as e:
-            logger.error(f"Stream error: {e}")
-            yield f"data: {json.dumps({'reply': f'Error: {str(e)}', 'phase': 'ERROR', 'progress_pct': 0.0})}\n\n"
+            yield f"data: {json.dumps({'reply': 'Error: ' + str(e), 'phase': 'ERROR', 'progress_pct': 0.0})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
-
-# ── Doubt Solver ──────────────────────────────────────────
-
 @app.post("/doubt/ask", response_model=DoubtResponse)
 async def ask_doubt(req: DoubtRequest):
-    logger.info(f"/doubt/ask topic={req.topic}")
-    ctx_str = "\n".join(
-        f"{'TEACHER' if m.role == 'assistant' else 'STUDENT'}: {m.content[:300]}"
-        for m in (req.context or [])[-4:]
-    ) or "None"
-
+    ctx_str = "\n".join([f"{m.role}: {m.content[:200]}" for m in (req.context or [])[-3:]])
     messages = [
         _system_teacher(req.subject, req.topic),
-        {
-            "role": "user",
-            "content": f"""Answer student doubt about "{req.topic}".
-
-Recent context:
-{ctx_str}
-
-Doubt: "{req.question}"
-
-Structure:
-**Direct Answer** (1-2 sentences)
-**Explanation** (3-5 sentences)
-**Example** (1 concrete example)
-**Common Mistake**
-**In short:** (one-line summary)
-
-End: "Does this clear your doubt? Feel free to ask a follow-up! 💡"
-""",
-        },
+        {"role": "user", "content": f"Context:\n{ctx_str}\n\nQuestion: {req.question}"}
     ]
     try:
-        answer = await _chat_text(messages, max_tokens=512, temperature=0.2)
+        answer = await _chat_text(messages)
         return DoubtResponse(answer=answer)
     except Exception as e:
-        logger.error(f"FAILED /doubt/ask: {e}")
         raise HTTPException(status_code=502, detail=str(e))
-
-
-# ── Session Summary ───────────────────────────────────────
 
 @app.post("/lecture/summary", response_model=SummaryResponse)
 async def lecture_summary(req: SummaryRequest):
-    logger.info(f"/lecture/summary topic={req.topic}")
-    conversation = "\n".join(
-        f"{'TEACHER' if m.role == 'assistant' else 'STUDENT'}: {m.content}"
-        for m in req.history
-    )[:4000]
-
+    conv = "\n".join([f"{m.role}: {m.content}" for m in req.history])[:3000]
     messages = [
-        {"role": "system", "content": "Generate exam-ready study notes from a lecture transcript. Use markdown."},
-        {
-            "role": "user",
-            "content": f"""Subject: {req.subject} | Topic: {req.topic}
-
-Transcript:
-{conversation}
-
-Format:
-## {req.topic} — Lecture Summary
-### Key Concepts Covered
-### Detailed Notes
-### Examples Discussed
-### Important Definitions
-### Common Mistakes to Avoid
-### What to Study Next
-
-Only include what was discussed. Under 400 words.
-""",
-        },
+        {"role": "system", "content": "Summarize the following study session into exam notes."},
+        {"role": "user", "content": f"Subject: {req.subject}. Topic: {req.topic}. Conversation:\n{conv}"}
     ]
     try:
-        summary = await _chat_text(messages, max_tokens=800, temperature=0.2)
+        summary = await _chat_text(messages, max_tokens=1024)
         return SummaryResponse(summary=summary)
     except Exception as e:
-        logger.error(f"FAILED /lecture/summary: {e}")
         raise HTTPException(status_code=502, detail=str(e))
