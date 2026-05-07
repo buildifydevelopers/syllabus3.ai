@@ -241,12 +241,13 @@ SYLLABUS TEXT:
         data = json.loads(cleaned)
         return SyllabusResponse(**data)
     except json.JSONDecodeError as e:
-        logger.error(f"JSON Decode Failure: {e} | Processed string: {cleaned if 'cleaned' in locals() else 'N/A'}")
-        logger.error(f"Raw AI Output: {raw}")
-        raise HTTPException(status_code=502, detail="AI produced invalid JSON formatting.")
+        logger.error(f"Syllabus JSON Error: {e} | Processed: {cleaned if 'cleaned' in locals() else 'N/A'}")
+        logger.error(f"RAW AI OUTPUT: {raw}")
+        raise HTTPException(status_code=502, detail="AI produced an invalid JSON format for this syllabus.")
     except Exception as e:
-        logger.error(f"Syllabus parse error: {e}")
-        raise HTTPException(status_code=502, detail="AI parsing failed.")
+        logger.error(f"Syllabus Parse Exception: {e}")
+        logger.error(f"RAW AI OUTPUT: {raw}")
+        raise HTTPException(status_code=502, detail=f"Failed to process syllabus: {str(e)}")
 
 @app.post("/plan/generate", response_model=PlanResponse)
 async def generate_plan(req: PlanRequest):
