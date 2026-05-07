@@ -211,14 +211,26 @@ async def parse_syllabus(req: SyllabusRequest):
     logger.info(f"/syllabus/parse subject={req.subject}")
 
     messages = [
-        {"role": "system", "content": "You are an academic curriculum analyst. Output ONLY valid JSON. No conversational text."},
-        {"role": "user", "content": f"""Parse this syllabus for {req.subject}. 
-Output JSON with:
-- "topics": list of strings
-- "estimated_total_hours": float
-- "topic_details": list of objects {{"topic": string, "estimated_min": int, "complexity": string}}
+        {"role": "system", "content": "You are a rigid Data Extraction Bot. You ONLY extract academic topics. You NEVER generate schedules, plans, or mention dates."},
+        {"role": "user", "content": f"""Extract the core academic topics from this {req.subject} syllabus.
+        
+CRITICAL RULES:
+- DO NOT generate a study plan.
+- DO NOT suggest dates or times.
+- DO NOT say 'Day 1', 'Week 2', etc.
+- ONLY list the actual chapters and concepts found in the text.
+- If the text is messy, group related concepts into logical topics.
 
-SYLLABUS: 
+Output EXACTLY this JSON structure:
+{{
+  "topics": ["Topic A", "Topic B"],
+  "estimated_total_hours": 20.0,
+  "topic_details": [
+    {{"topic": "Topic Name", "estimated_min": 60, "complexity": "Hard/Medium/Easy"}}
+  ]
+}}
+
+SYLLABUS TEXT:
 {content[:5000]}"""}
     ]
     raw = ""
