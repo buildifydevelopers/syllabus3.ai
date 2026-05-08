@@ -17,17 +17,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("EduPlatform")
 
 class Settings(BaseSettings):
     nvidia_api_key: str = ""
     allowed_origin: str = "*"
     nvidia_model: str = "meta/llama-3.1-8b-instruct"
-
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -36,19 +32,10 @@ settings = Settings()
 NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
 def _headers() -> dict:
-    return {
-        "Authorization": f"Bearer {settings.nvidia_api_key}",
-        "Content-Type": "application/json",
-    }
+    return {"Authorization": f"Bearer {settings.nvidia_api_key}", "Content-Type": "application/json"}
 
 async def _chat_text(messages: list, max_tokens: int = 1024, temperature: float = 0.2) -> str:
-    payload = {
-        "model": settings.nvidia_model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": False,
-    }
+    payload = {"model": settings.nvidia_model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature, "stream": False}
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         resp = await client.post(NVIDIA_API_URL, headers=_headers(), json=payload)
     if resp.status_code != 200:
@@ -70,12 +57,12 @@ class Message(BaseModel):
 
 class SyllabusRequest(BaseModel):
     subject: str
-    raw_text: Optional[str] = None
+    raw_text: Optional[str] = ""
 
 class SyllabusResponse(BaseModel):
     topics: List[str]
     estimated_total_hours: float
-    topic_details: list
+    topic_details: List[dict]
 
 class PlanRequest(BaseModel):
     subject: str
@@ -100,18 +87,30 @@ class LectureChatResponse(BaseModel):
     next_topic: Optional[str] = None
     progress_pct: float
 
-app = FastAPI(title="EduPlatform AI", version="5.5.1")
+app = FastAPI(title="EduPlatform AI")
 app.add_middleware(CORSMiddleware, allow_origins=[settings.allowed_origin], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/syllabus/parse", response_model=SyllabusResponse)
 async def parse_syllabus(req: SyllabusRequest):
-    messages = [{"role": "system", "content": "Extract topics ONLY. Output JSON."}, {"role": "user", "content": f"Syllabus for {req.subject}: {req.raw_text[:4000]}"}]
-    raw = await _chat_text(messages)
-    return SyllabusResponse(**json.loads(_clean_json(raw)))
+    messages = [
+        {"role": "system", "content": "You are a rigid Data Extraction Bot. Output ONLY valid JSON."},
+        {"role": "user", "content": f"""Extract academic topics from {req.subject} syllabus.
+Output exactly this JSON: {{"topics": ["Name"], "estimated_total_hours": 10.0, "topic_details": [{{"topic": "Name", "estimated_min": 60, "complexity": "Medium"}}]}}
+Do NOT use nested dictionaries for chapters. Use a flat list in "topics".
+SYLLABUS: {req.raw_text[:4000]}"""}
+    ]
+    raw = await _chat_text(messages, temperature=0.1)
+    data = json.loads(_clean_json(raw))
+    # Safety: ensure it is a list
+    if isinstance(data.get("topics"), dict):
+        data["topics"] = list(data["topics"].values())
+    if not data.get("topic_details"):
+        data["topic_details"] = [{"topic": t, "estimated_min": 60, "complexity": "Medium"} for t in data.get("topics", [])]
+    return SyllabusResponse(**data)
 
 @app.post("/plan/generate", response_model=PlanResponse)
 async def generate_plan(req: PlanRequest):
-    messages = [{"role": "system", "content": "Create study plan. Output JSON."}, {"role": "user", "content": f"Subject: {req.subject}. Topics: {req.topics}"}]
+    messages = [{"role": "system", "content": "Create study plan JSON."}, {"role": "user", "content": f"Subject: {req.subject}. Topics: {req.topics}"}]
     raw = await _chat_text(messages)
     data = json.loads(_clean_json(raw))
     return PlanResponse(schedule=data.get("schedule", []), summary=str(data.get("summary", "")), total_days=data.get("total_days", 0), daily_hours_recommended=data.get("daily_hours_recommended", 2.0))
@@ -119,12 +118,12 @@ async def generate_plan(req: PlanRequest):
 @app.post("/lecture/chat", response_model=LectureChatResponse)
 async def lecture_chat(req: LectureChatRequest):
     syllabus_str = ", ".join(req.full_syllabus)
-    # Using double curly braces to avoid SyntaxError in f-string
     messages = [
-        {"role": "system", "content": f"You are a tutor. Subject: {req.subject}. Current: {req.topic}. Syllabus: [{syllabus_str}]. If doubt asked, next_topic = {req.topic}. Else next topic. Output ONLY JSON: {{ \"reply\": \"...\", \"next_topic\": \"...\", \"progress_pct\": 0.0 }}"}
+        {"role": "system", "content": f"You are a tutor. Subject: {req.subject}. Syllabus: [{syllabus_str}]. If doubt asked, next_topic = {req.topic}. Output ONLY JSON: {{\"reply\": \"...\", \"next_topic\": \"...\", \"progress_pct\": 0.0}}"}
     ]
     for m in req.history[-6:]: messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": req.message})
     raw = await _chat_text(messages, temperature=0.7)
     data = json.loads(_clean_json(raw))
     return LectureChatResponse(reply=data.get("reply", ""), next_topic=data.get("next_topic", req.topic), progress_pct=data.get("progress_pct", 0.0))
+
