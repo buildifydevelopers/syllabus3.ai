@@ -100,7 +100,7 @@ class LectureChatResponse(BaseModel):
     next_topic: Optional[str] = None
     progress_pct: float
 
-app = FastAPI(title="EduPlatform AI", version="5.5.0")
+app = FastAPI(title="EduPlatform AI", version="5.5.1")
 app.add_middleware(CORSMiddleware, allow_origins=[settings.allowed_origin], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/syllabus/parse", response_model=SyllabusResponse)
@@ -119,8 +119,9 @@ async def generate_plan(req: PlanRequest):
 @app.post("/lecture/chat", response_model=LectureChatResponse)
 async def lecture_chat(req: LectureChatRequest):
     syllabus_str = ", ".join(req.full_syllabus)
+    # Using double curly braces to avoid SyntaxError in f-string
     messages = [
-        {"role": "system", "content": f"You are a tutor. Subject: {req.subject}. Current: {req.topic}. Syllabus: [{syllabus_str}]. If doubt asked, next_topic = {req.topic}. Else next topic. Output ONLY JSON: {\"reply\": \"...\", \"next_topic\": \"...\", \"progress_pct\": 0.0}"}
+        {"role": "system", "content": f"You are a tutor. Subject: {req.subject}. Current: {req.topic}. Syllabus: [{syllabus_str}]. If doubt asked, next_topic = {req.topic}. Else next topic. Output ONLY JSON: {{ \"reply\": \"...\", \"next_topic\": \"...\", \"progress_pct\": 0.0 }}"}
     ]
     for m in req.history[-6:]: messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": req.message})
