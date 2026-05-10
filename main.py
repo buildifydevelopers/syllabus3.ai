@@ -10,6 +10,7 @@ import json
 import re
 import logging
 import traceback
+import httpx
 from typing import List, Optional
 
 from openai import OpenAI
@@ -46,6 +47,7 @@ def _client() -> OpenAI:
     return OpenAI(
         api_key=settings.nvidia_api_key,
         base_url=settings.nim_base_url,
+        http_client=httpx.Client(),
     )
 
 
