@@ -1,25 +1,10 @@
-version: "3.9"
-
 services:
-  api:
-    build: .
-    container_name: eduplatform_api
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./main.py:/app/main.py          # hot-swap code without rebuild
-      - eduplatform_data:/app/data      # persistent SQLite
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - SECRET_KEY=${SECRET_KEY}
-      - DATABASE_URL=sqlite:////app/data/edu_platform.db
-      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-volumes:
-  eduplatform_data:
+  - type: web
+    name: syllabusai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: NVIDIA_API_KEY
+        sync: false          # set manually in Render dashboard
+    healthCheckPath: /
