@@ -8,6 +8,8 @@
 
 import json
 import re
+import logging
+import traceback
 from typing import List, Optional
 
 from openai import OpenAI
@@ -15,6 +17,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("EduPlatform")
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -59,14 +64,19 @@ def _chat(
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    response = _client().chat.completions.create(
-        model=settings.nim_model,
-        messages=messages,
-        temperature=temperature,
-        top_p=0.9,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        response = _client().chat.completions.create(
+            model=settings.nim_model,
+            messages=messages,
+            temperature=temperature,
+            top_p=0.9,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("NIM Chat Error: %s", e)
+        logger.error(traceback.format_exc())
+        raise e
 
 
 def _clean_json(text: str) -> str:
@@ -308,8 +318,11 @@ type values: "lecture" | "revision" | "exam" | "rest"
             total_days=data.get("total_days", days),
         )
     except json.JSONDecodeError as e:
+        logger.error("JSON Parse Error: %s | text: %s", e, text[:500] if 'text' in locals() else "N/A")
         raise HTTPException(status_code=502, detail=f"NIM returned invalid JSON: {e}")
     except Exception as e:
+        logger.error("Syllabus Parse Error: %s", e)
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=502, detail=f"NIM error: {e}")
 
 
@@ -592,6 +605,7 @@ Set total_topics to the count of topics in the array.
             recommended_order=data.get("recommended_order", [t.topic for t in topics]),
         )
     except json.JSONDecodeError as e:
+        logger.error("JSON error: %s", e)
         raise HTTPException(status_code=502, detail=f"NIM returned invalid JSON: {e}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"NIM error: {e}")
