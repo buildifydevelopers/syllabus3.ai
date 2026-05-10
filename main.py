@@ -281,43 +281,45 @@ INPUT:
   Subject        : {req.subject}
   Topics         : {json.dumps(req.topics)}
   Start date     : {req.start_date}
-  Exam date      : {req.exam_date or 'Not specified'}
-  Days available : {days}
-  Daily hours    : {req.daily_hours}
 
 PLANNING RULES:
-  - Assess each topic's complexity (foundational = 1 day, complex = 2-3 days)
-  - Prerequisites of other topics must come first
-  - Insert a "Revision" day after every 5 lecture days
-  - Last 3 days before exam = revision/mock tests only
-  - Do NOT assign lectures on Sundays (rest day)
-  - duration_mins = daily_hours * 60 (max 180)
-  - notes must be a specific actionable study tip for that topic
+  - Order topics logically (prerequisites first).
+  - Group related sub-concepts together.
+  - notes must be a specific actionable study tip for that topic.
+  - type: "lecture" (default) or "revision" if needed.
 
 Respond ONLY with valid JSON, no markdown fences:
 {{
   "schedule": [
     {{
-      "day": 1,
-      "date": "YYYY-MM-DD",
       "topic": "exact topic name",
-      "duration_mins": 120,
       "notes": "specific study tip",
       "type": "lecture"
     }}
   ],
-  "summary": "3-sentence strategy overview",
-  "total_days": {days}
+  "summary": "3-sentence strategy overview"
 }}
-type values: "lecture" | "revision" | "exam" | "rest"
 """
     try:
         text = _chat(system="You are a professional academic curriculum planner.", history=[], user_message=prompt, temperature=0.3)
         data = json.loads(_clean_json(text))
+        
+        schedule = data.get("schedule", [])
+        final_schedule = []
+        for i, item in enumerate(schedule):
+            final_schedule.append({
+                "day": i + 1,
+                "date": req.start_date,
+                "topic": item.get("topic", "Untitled Topic"),
+                "duration_mins": 120,
+                "notes": item.get("notes", ""),
+                "type": item.get("type", "lecture")
+            })
+
         return PlanResponse(
-            schedule=data.get("schedule", []),
+            schedule=final_schedule,
             summary=data.get("summary", ""),
-            total_days=data.get("total_days", days),
+            total_days=len(final_schedule),
         )
     except json.JSONDecodeError as e:
         logger.error("JSON Parse Error: %s | text: %s", e, text[:500] if 'text' in locals() else "N/A")
@@ -377,12 +379,12 @@ Otherwise answer their clarifying question briefly, then re-invite them to start
 """,
         "CORE TEACHING": f"""
 You are in Phase 2 (CORE TEACHING).
-- Teach ONE sub-concept of "{req.topic}" at a time.
+- Teach concepts concisely.
 - State and bold the concept name.
 - Explain in 3-5 sentences with correct terminology.
 - Give ONE real-world example.
-- End by asking a comprehension question.
-- Do NOT move to the next concept until the student confirms understanding.
+- End by asking if the student wants to go deeper or move to the next concept.
+- IF THE STUDENT SAYS 'NEXT' OR 'DONE', IMMEDIATELY FINISH THIS TOPIC.
 """,
         "EXAMPLES & PRACTICE": f"""
 You are in Phase 3 (EXAMPLES & PRACTICE).
@@ -396,20 +398,22 @@ You are in Phase 5 (RECAP).
 - Summarise all key concepts as a numbered list.
 - Highlight the 2-3 most important takeaways.
 - Suggest what to review next.
-- End with: "Great work today! Type /end to finish the lecture. 🎓"
+- End with: "Great work today! The lecture is complete. [TOPIC_COMPLETED] 🎓"
 """,
     }.get(current_phase, "")
 
     off_topic_guard = f"""
 IMPORTANT — Before responding, check: Is the student message related to "{req.topic}" in {req.subject}?
 - YES → teach normally per phase instructions.
-- NO  → reply: "That's outside today's scope! Let's stay on **{req.topic}**. [one-line redirect] [TEACHING]"
+- NAVIGATION (next, move on, done, skip) → Acknowledge and proceed to finish this topic immediately.
+- NO  → reply: "That's outside the scope of **{req.topic}**! Let's stay focused. [one-line redirect] [TEACHING]"
   Do NOT answer the off-topic question.
 """
 
     system = (
         _teacher_persona(req.subject, req.topic, req.mode)
         + f"\nCURRENT PHASE: {current_phase} (message {message_count + 1} of session)\n"
+        + "\nSTRATEGIC RULE: If the user indicates they want to move on, skip, or finish (e.g., 'next', 'done', 'i understand'), IMMEDIATELY jump to RECAP & WRAP-UP to close the topic with [TOPIC_COMPLETED]. Do NOT persist in teaching.\n"
         + phase_instruction
         + off_topic_guard
     )
