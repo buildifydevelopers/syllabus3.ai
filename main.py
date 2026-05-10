@@ -198,6 +198,25 @@ class SummaryResponse(BaseModel):
     summary: str
 
 
+# ── /syllabus/parse ───────────────────────────────────────
+class SyllabusParseRequest(BaseModel):
+    raw_text: str                        # pasted syllabus text from frontend
+    subject: Optional[str] = None       # hint; AI infers if omitted
+
+class SyllabusTopic(BaseModel):
+    unit: str
+    topic: str
+    subtopics: List[str]
+    estimated_days: int
+    difficulty: str                      # "easy" | "medium" | "hard"
+
+class SyllabusParseResponse(BaseModel):
+    subject: str
+    topics: List[SyllabusTopic]
+    total_topics: int
+    recommended_order: List[str]         # topic names in suggested study order
+
+
 # ╔══════════════════════════════════════════════════════════╗
 # ║  4. APP                                                  ║
 # ╚══════════════════════════════════════════════════════════╝
@@ -503,5 +522,76 @@ RULES:
             temperature=0.0,
         )
         return SummaryResponse(summary=summary)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"NIM error: {e}")
+
+
+# ── Syllabus Parser ───────────────────────────────────────
+
+@app.post("/syllabus/parse", response_model=SyllabusParseResponse, tags=["Syllabus"])
+def parse_syllabus(req: SyllabusParseRequest):
+    """
+    Frontend sends: raw syllabus text (pasted from PDF/doc), optional subject hint.
+    Returns: structured topic list with difficulty, estimated days, recommended order.
+    Frontend uses topics[] to seed /plan/generate and the topic selector.
+    """
+    prompt = f"""You are an expert academic curriculum analyst.
+
+TASK: Parse the raw syllabus text below into a structured JSON topic list.
+
+Subject hint: {req.subject or "Infer from content"}
+
+Raw syllabus:
+\"\"\"
+{req.raw_text[:6000]}
+\"\"\"
+
+RULES:
+1. Infer subject name if not provided.
+2. Group content into logical units/chapters.
+3. Estimate difficulty per topic: "easy" | "medium" | "hard"
+   - easy   : definitional, recall-based
+   - medium : requires understanding + application
+   - hard   : multi-step reasoning, derivations, or complex problem-solving
+4. Estimate study days per topic (1 = simple, 3 = complex).
+5. recommended_order = dependency-aware order (prerequisites first).
+6. subtopics = bullet points or sub-headings found under that topic.
+   If none listed, generate 2-3 logical subtopics.
+
+Respond ONLY with valid JSON, no markdown fences:
+{{
+  "subject": "inferred or provided subject name",
+  "topics": [
+    {{
+      "unit": "Unit 1 / Chapter name",
+      "topic": "Topic name",
+      "subtopics": ["subtopic 1", "subtopic 2"],
+      "estimated_days": 2,
+      "difficulty": "medium"
+    }}
+  ],
+  "total_topics": 0,
+  "recommended_order": ["Topic A", "Topic B", "Topic C"]
+}}
+Set total_topics to the count of topics in the array.
+"""
+    try:
+        text = _chat(
+            system="You are an expert academic curriculum analyst. Output only valid JSON.",
+            history=[],
+            user_message=prompt,
+            temperature=0.1,
+        )
+        data = json.loads(_clean_json(text))
+
+        topics = [SyllabusTopic(**t) for t in data.get("topics", [])]
+        return SyllabusParseResponse(
+            subject=data.get("subject", req.subject or "Unknown"),
+            topics=topics,
+            total_topics=data.get("total_topics", len(topics)),
+            recommended_order=data.get("recommended_order", [t.topic for t in topics]),
+        )
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"NIM returned invalid JSON: {e}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"NIM error: {e}")
