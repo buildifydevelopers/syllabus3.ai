@@ -88,50 +88,52 @@ def _clean_json(text: str) -> str:
     return text.strip()
 
 
-def _teacher_persona(subject: str, topic: str, mode: str = "text") -> str:
+def _teacher_persona(subject: str, topic: str, type: str = "lecture", mode: str = "text") -> str:
     """
     Master behavioral contract injected into every lecture prompt.
+    Adapts based on whether this is a Lecture, Test, or Revision.
     """
-    return f"""
-=== AI TEACHER IDENTITY & STRICT RULES ===
-
+    
+    base_instructions = ""
+    if type == "test" or type == "mock_exam":
+        base_instructions = f"""
+You are now an EXAMINER. The session is a {type.upper()} on "{topic}".
+1. DO NOT TEACH. Your goal is to assess knowledge.
+2. Ask 3-5 structured questions one by one.
+3. Wait for the student's answer before asking the next question.
+4. After all questions, provide a Score (0-10) and detailed Feedback.
+5. End by saying "[TOPIC_COMPLETED]" to move to the next session.
+"""
+    elif type == "revision":
+        base_instructions = f"""
+You are now a REVISION COACH. The topic is "{topic}".
+1. Briefly summarize the 3 most critical points of "{topic}".
+2. Ask the student if they have any specific doubts or parts they find difficult.
+3. Conduct a quick rapid-fire quiz (2 questions).
+"""
+    else:
+        # Default Lecture Persona
+        base_instructions = f"""
 You are EduBot, an expert academic teacher specialising in {subject}.
 Your ONLY job right now is to teach the topic: "{topic}".
 
-ABSOLUTE RULES — follow these without exception:
+Phase 1 — INTRODUCTION  : Define the topic, why it matters, real-world use.
+Phase 2 — CORE TEACHING : Explain concepts concisely with bold names and examples.
+Phase 3 — CHECK         : Ask the student a question to verify understanding.
+Phase 4 — RECAP         : Summarise key points.
+IF THE STUDENT SAYS 'NEXT' OR 'DONE', IMMEDIATELY FINISH THIS TOPIC.
+"""
 
-1. STAY ON TOPIC: Every response must be directly about "{topic}" in {subject}.
-   If the student asks about anything unrelated, say:
-   "That's outside today's topic. Let's stay focused on {topic}."
-   Then immediately return to teaching. Never answer off-topic questions.
+    return f"""
+=== AI TEACHER IDENTITY & STRICT RULES ===
+{base_instructions}
 
-2. NEVER HALLUCINATE: Only state facts you are certain about.
-   If unsure, say "Let's reason through this carefully together."
-   Never invent formulas, dates, names, or definitions.
-
-3. STRUCTURED TEACHING — follow this flow every session:
-   Phase 1 — INTRODUCTION  : Define the topic, why it matters, real-world use.
-   Phase 2 — CORE TEACHING : Explain concepts one at a time.
-   Phase 3 — EXAMPLES      : Give 1-2 concrete examples per concept.
-   Phase 4 — CHECK         : Ask the student a question to verify understanding.
-   Phase 5 — RECAP         : Summarise key points before ending.
-
-4. ONE CONCEPT AT A TIME: Teach one idea, confirm understanding, then move on.
-
-5. ACADEMIC LANGUAGE: Use correct subject-specific terminology.
-   Always explain a term the first time you use it.
-
-6. NO CASUAL CHAT: Do not discuss anything outside {subject} / {topic}.
-
-7. ENCOURAGE HONESTLY: Say "Good thinking!" only when the student is correct.
-
-8. {"VOICE MODE — keep each response under 80 words. Short, clear sentences only. No markdown." if mode == "voice" else "TEXT MODE — use markdown (headers, bold, bullets) to structure your response."}
-
-9. End each response with one of:
-   [TEACHING] — still explaining a concept
-   [CHECK]    — just asked a comprehension question
-   [RECAP]    — summarising at the end
-
+ABSOLUTE RULES:
+- STAY ON TOPIC: Every response must be directly about "{topic}".
+- NO CASUAL CHAT: Do not discuss anything outside {subject} / {topic}.
+- {"VOICE MODE — keep each response under 80 words. Short, clear sentences only. No markdown." if mode == "voice" else "TEXT MODE — use markdown (headers, bold, bullets) to structure your response."}
+- End each response with [TEACHING], [CHECK], or [RECAP].
+- When the topic is fully covered or the test is done, end with [TOPIC_COMPLETED].
 === END OF RULES ===
 """
 
@@ -273,53 +275,55 @@ def generate_plan(req: PlanRequest):
     exam  = dt.strptime(req.exam_date, "%Y-%m-%d") if req.exam_date else None
     days  = (exam - start).days if exam else len(req.topics) * 2
 
-    prompt = f"""You are a professional academic curriculum planner.
+    prompt = f"""You are a professional Academic Tuition Planner.
 
-TASK: Create a complete, realistic day-by-day study schedule.
+TASK: Create a comprehensive day-by-day study and assessment schedule for the student.
 
 INPUT:
   Subject        : {req.subject}
   Topics         : {json.dumps(req.topics)}
-  Start date     : {req.start_date}
+  Start Date     : {req.start_date}
+  Exam Date      : {req.exam_date or 'Not specified'}
+  Daily Hours    : {req.daily_hours}
+  Days Available : {days}
 
 PLANNING RULES:
-  - Order topics logically (prerequisites first).
-  - Group related sub-concepts together.
-  - notes must be a specific actionable study tip for that topic.
-  - type: "lecture" (default) or "revision" if needed.
+  - Sequence topics logically by difficulty and prerequisites.
+  - For every 6 days of learning, add 1 "Weekly Test" day.
+  - For every 4 weeks of learning, add 1 "Monthly Grand Test" day.
+  - The last 7 days before the Exam Date must be "Final Mock Exams" and "Intensive Revision".
+  - Each entry must specify:
+    - topic: The name of the topic or "Weekly Test" / "Monthly Test".
+    - type: "lecture" | "test" | "revision" | "mock_exam"
+    - notes: Specific study tip or test focus areas.
+    - duration_mins: daily_hours * 60
+    - day: sequential day number
+    - date: YYYY-MM-DD (calculate based on start_date)
 
 Respond ONLY with valid JSON, no markdown fences:
 {{
   "schedule": [
     {{
-      "topic": "exact topic name",
-      "notes": "specific study tip",
+      "day": 1,
+      "date": "YYYY-MM-DD",
+      "topic": "Topic Name",
+      "duration_mins": 120,
+      "notes": "Focus on...",
       "type": "lecture"
     }}
   ],
-  "summary": "3-sentence strategy overview"
+  "summary": "Your personalized 1-to-1 tuition strategy."
 }}
 """
     try:
-        text = _chat(system="You are a professional academic curriculum planner.", history=[], user_message=prompt, temperature=0.3)
+        text = _chat(system="You are an expert AI Tuition Master.", history=[], user_message=prompt, temperature=0.3)
         data = json.loads(_clean_json(text))
         
         schedule = data.get("schedule", [])
-        final_schedule = []
-        for i, item in enumerate(schedule):
-            final_schedule.append({
-                "day": i + 1,
-                "date": req.start_date,
-                "topic": item.get("topic", "Untitled Topic"),
-                "duration_mins": 120,
-                "notes": item.get("notes", ""),
-                "type": item.get("type", "lecture")
-            })
-
         return PlanResponse(
-            schedule=final_schedule,
+            schedule=schedule,
             summary=data.get("summary", ""),
-            total_days=len(final_schedule),
+            total_days=len(schedule),
         )
     except json.JSONDecodeError as e:
         logger.error("JSON Parse Error: %s | text: %s", e, text[:500] if 'text' in locals() else "N/A")
@@ -334,27 +338,29 @@ Respond ONLY with valid JSON, no markdown fences:
 
 @app.post("/lecture/intro", response_model=LectureIntroResponse, tags=["Lecture"])
 def lecture_intro(req: LectureIntroRequest):
-    user_prompt = f"""
+    if req.type == "test" or req.type == "mock_exam":
+        user_prompt = f"""
+TASK: Open the {req.type.upper()} for "{req.topic}".
+1. Welcome the student to the assessment.
+2. Briefly explain the test format (3-5 questions).
+3. Wish them luck and ask if they are ready to begin.
+"""
+    elif req.type == "revision":
+        user_prompt = f"""
+TASK: Open the REVISION session for "{req.topic}".
+1. Welcome the student back.
+2. State why revision of "{req.topic}" is important.
+3. Ask if they have any initial questions or if they are ready for the summary.
+"""
+    else:
+        user_prompt = f"""
 TASK: Write the Phase 1 (INTRODUCTION) opening for today's lecture on "{req.topic}".
-
-Your introduction MUST include ALL of the following in this order:
-1. One-sentence welcome that names the topic explicitly.
-2. WHAT: Precise definition of "{req.topic}" in 2-3 sentences using correct terminology.
-3. WHY: Why this topic matters — one real-world application or use case.
-4. PREREQUISITES: 1-2 concepts the student should already know.
-   (If foundational, say "No prior knowledge needed.")
-5. TODAY'S ROADMAP: Numbered list of exactly what will be covered.
-6. Closing line: "Type 'ready' or ask any clarifying question to begin! 🎓"
-
-FORMAT: Use markdown. Bold key terms on first use.
-LENGTH: 200-280 words.
-Do NOT teach the content yet — this is the introduction only.
-
-[TEACHING]
+Your introduction MUST include: Welcome, Definition of "{req.topic}", Why it matters, and today's Roadmap.
+Closing line: "Type 'ready' or ask any clarifying question to begin! 🎓"
 """
     try:
         reply = _chat(
-            system=_teacher_persona(req.subject, req.topic),
+            system=_teacher_persona(req.subject, req.topic, req.type),
             history=[],
             user_message=user_prompt,
             temperature=0.0,
@@ -368,57 +374,29 @@ Do NOT teach the content yet — this is the introduction only.
 
 @app.post("/lecture/chat", response_model=LectureChatResponse, tags=["Lecture"])
 def lecture_chat(req: LectureChatRequest):
-    message_count = len(req.history)
-    current_phase = _infer_phase(message_count)
+    if req.type == "test" or req.type == "mock_exam":
+        system = _teacher_persona(req.subject, req.topic, req.type, req.mode)
+        current_phase = "TESTING"
+    elif req.type == "revision":
+        system = _teacher_persona(req.subject, req.topic, req.type, req.mode)
+        current_phase = "REVISION"
+    else:
+        message_count = len(req.history)
+        current_phase = _infer_phase(message_count)
+        phase_instruction = {
+            "INTRODUCTION": "If student says ready -> start core teaching.",
+            "CORE TEACHING": "Teach concepts concisely with bold names and examples. Ask if ready for next.",
+            "EXAMPLES & PRACTICE": "Give a problem, wait for answer, provide feedback.",
+            "RECAP & WRAP-UP": "Summarize key points. End with [TOPIC_COMPLETED].",
+        }.get(current_phase, "")
+        
+        system = (
+            _teacher_persona(req.subject, req.topic, req.type, req.mode)
+            + f"\nCURRENT PHASE: {current_phase}\n"
+            + phase_instruction
+        )
 
-    phase_instruction = {
-        "INTRODUCTION": """
-You are in Phase 1 (INTRODUCTION).
-If the student says "ready" or similar → begin Phase 2 immediately.
-Otherwise answer their clarifying question briefly, then re-invite them to start.
-""",
-        "CORE TEACHING": f"""
-You are in Phase 2 (CORE TEACHING).
-- Teach concepts concisely.
-- State and bold the concept name.
-- Explain in 3-5 sentences with correct terminology.
-- Give ONE real-world example.
-- End by asking if the student wants to go deeper or move to the next concept.
-- IF THE STUDENT SAYS 'NEXT' OR 'DONE', IMMEDIATELY FINISH THIS TOPIC.
-""",
-        "EXAMPLES & PRACTICE": f"""
-You are in Phase 3 (EXAMPLES & PRACTICE).
-- Give a concrete worked example or problem about "{req.topic}".
-- Walk through it step by step.
-- Ask the student to solve a similar problem.
-- If they answer: correct → explain why; wrong → explain the mistake clearly.
-""",
-        "RECAP & WRAP-UP": """
-You are in Phase 5 (RECAP).
-- Summarise all key concepts as a numbered list.
-- Highlight the 2-3 most important takeaways.
-- Suggest what to review next.
-- End with: "Great work today! The lecture is complete. [TOPIC_COMPLETED] 🎓"
-""",
-    }.get(current_phase, "")
-
-    off_topic_guard = f"""
-IMPORTANT — Before responding, check: Is the student message related to "{req.topic}" in {req.subject}?
-- YES → teach normally per phase instructions.
-- NAVIGATION (next, move on, done, skip) → Acknowledge and proceed to finish this topic immediately.
-- NO  → reply: "That's outside the scope of **{req.topic}**! Let's stay focused. [one-line redirect] [TEACHING]"
-  Do NOT answer the off-topic question.
-"""
-
-    system = (
-        _teacher_persona(req.subject, req.topic, req.mode)
-        + f"\nCURRENT PHASE: {current_phase} (message {message_count + 1} of session)\n"
-        + "\nSTRATEGIC RULE: If the user indicates they want to move on, skip, or finish (e.g., 'next', 'done', 'i understand'), IMMEDIATELY jump to RECAP & WRAP-UP to close the topic with [TOPIC_COMPLETED]. Do NOT persist in teaching.\n"
-        + phase_instruction
-        + off_topic_guard
-    )
-
-    # Convert history to OpenAI message format (last 12 turns)
+    # Convert history to OpenAI message format
     nim_history = [
         {"role": m.role if m.role == "user" else "assistant", "content": m.content}
         for m in req.history[-12:]
