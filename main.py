@@ -56,7 +56,7 @@ def _chat(
     history: List[dict],        # [{"role": "user"|"assistant", "content": str}, ...]
     user_message: str,
     temperature: float = 0.0,
-    max_tokens: int = 1024,
+    max_tokens: int = 4096,
 ) -> str:
     """
     Single helper for all NIM calls.
@@ -571,9 +571,7 @@ RULES:
 4. Estimate study days per topic (1 = simple, 3 = complex).
 5. recommended_order = dependency-aware order (prerequisites first).
 6. subtopics = bullet points or sub-headings found under that topic.
-   If none listed, generate 2-3 logical subtopics.
-
-Respond ONLY with valid JSON, no markdown fences:
+7. Respond strictly with valid JSON. Ensure all property names and string values are enclosed in double quotes. Do not include any text, notes, or markdown fences outside the JSON object.
 {{
   "subject": "inferred or provided subject name",
   "topics": [
